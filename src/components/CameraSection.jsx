@@ -5,7 +5,6 @@ import NewVehicleModal from "./NewVehicleModal";
 import "@fortawesome/fontawesome-free/css/all.css";
 import toastr from "toastr";
 import "toastr/build/toastr.min.css";
-import debounce from "lodash/debounce";
 
 const CameraSection = () => {
   // Referencias y estados para cámara de placas (solo placas ahora)
@@ -130,56 +129,53 @@ const CameraSection = () => {
     fetchVehiculos();
   }, [fetchVehiculos]);
 
-  const updateImageUsage = useCallback(
-    debounce(async () => {
-      try {
-        setIsLoadingImageUsage(true);
-        const userId = localStorage.getItem("id");
-        if (!userId) {
-          console.error("No se encontró el ID del usuario en localStorage");
-          return;
-        }
+  const updateImageUsage = useCallback(async () => {
+    try {
+      setIsLoadingImageUsage(true);
+      const userId = localStorage.getItem("id");
+      if (!userId) {
+        console.error("No se encontró el ID del usuario en localStorage");
+        return;
+      }
 
-        const response = await fetch(
-          `https://rumipark-camimujica.pythonanywhere.com/imagenes_procesadas_total?id=${userId}`
+      const response = await fetch(
+        `https://rumipark-camimujica.pythonanywhere.com/imagenes_procesadas_total?id=${userId}`
+      );
+      const data = await response.json();
+
+      if (response.ok) {
+        setImageUsage({
+          processed: data.imagenes_procesadas_total || 0,
+          limit: data.limite_imagenes || 0,
+        });
+        if (
+          data.mensaje &&
+          data.mensaje.includes("Has alcanzado el límite")
+        ) {
+          showNotification(data.mensaje, "warning");
+        }
+      } else {
+        console.error(
+          "Error al actualizar el conteo de imágenes:",
+          data.error
         );
-        const data = await response.json();
-
-        if (response.ok) {
-          setImageUsage({
-            processed: data.imagenes_procesadas_total || 0,
-            limit: data.limite_imagenes || 0,
-          });
-          if (
-            data.mensaje &&
-            data.mensaje.includes("Has alcanzado el límite")
-          ) {
-            showNotification(data.mensaje, "warning");
-          }
-        } else {
-          console.error(
-            "Error al actualizar el conteo de imágenes:",
-            data.error
-          );
-          setImageUsage({ processed: 0, limit: 0 });
-          showNotification(
-            "Error al actualizar el conteo de imágenes procesadas.",
-            "error"
-          );
-        }
-      } catch (err) {
-        console.error("Error al actualizar el conteo de imágenes:", err);
         setImageUsage({ processed: 0, limit: 0 });
         showNotification(
           "Error al actualizar el conteo de imágenes procesadas.",
           "error"
         );
-      } finally {
-        setIsLoadingImageUsage(false);
       }
-    }, 500),
-    []
-  );
+    } catch (err) {
+      console.error("Error al actualizar el conteo de imágenes:", err);
+      setImageUsage({ processed: 0, limit: 0 });
+      showNotification(
+        "Error al actualizar el conteo de imágenes procesadas.",
+        "error"
+      );
+    } finally {
+      setIsLoadingImageUsage(false);
+    }
+  }, []);
 
   useEffect(() => {
     let plateDetectionInterval;
@@ -390,6 +386,9 @@ const CameraSection = () => {
       setIsPlateRegistered(placaRegistrada);
       setVehicleDetails(data.vehiculo || null);
       setPlateBbox(data.bbox || null);
+
+      // Actualizar el contador de imágenes procesadas inmediatamente después de procesar una imagen
+      await updateImageUsage();
 
       if (data.estado === "Placa registrada") {
         // **CORRECCIÓN PRINCIPAL: Verificar si hay entrada pendiente**
