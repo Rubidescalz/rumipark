@@ -21,6 +21,7 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
   const [isListening, setIsListening] = useState(false);
   const [transcriptMessage, setTranscriptMessage] = useState("");
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const recognitionRef = useRef(null);
   const formRef = useRef(null);
   const restartTimeoutRef = useRef(null);
@@ -50,6 +51,7 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
       dni: "",
     });
     setTranscriptMessage("");
+    setIsProcessing(false);
   };
 
   // Configurar reconocimiento de voz
@@ -65,99 +67,36 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.lang = "es-ES";
+    recognition.maxAlternatives = 3;
 
     recognition.onresult = (event) => {
-      const transcript = event.results[event.results.length - 1][0].transcript
-        .toLowerCase()
-        .trim();
-      setTranscriptMessage(`Escuchado: ${transcript}`);
-
-      // Comandos de control
-      if (
-        transcript.includes("desactivar micrófono") ||
-        transcript.includes("para")
-      ) {
-        stopListening();
-        setTranscriptMessage("Micrófono desactivado.");
-        return;
-      }
-
-      if (transcript.includes("cancelar")) {
-        stopListening();
-        resetForm();
-        onClose();
-        setTranscriptMessage("Operación cancelada.");
-        return;
-      }
-
-      if (transcript.includes("registrar")) {
-        stopListening();
-        if (formRef.current) {
-          formRef.current.dispatchEvent(
-            new Event("submit", { cancelable: true, bubbles: true })
-          );
-        }
-        return;
-      }
-
-      // Procesar campos con expresiones regulares
-      const placaMatch = transcript.match(
-        /(?:número de placa|placa)\s+([a-z0-9\s-]+)/i
-      );
-      const tipoMatch = transcript.match(
-        /(?:tipo de vehículo|tipo)\s+(l1|l2|l3|l4|l5|l6|l7|m1|n1)/i
-      );
-      const propietarioMatch = transcript.match(
-        /(?:propietario|dueño)\s+([a-z\s]+)/i
-      );
-      const dniMatch = transcript.match(/(?:dni|documento)\s+([0-9]+)/i);
-
-      if (placaMatch && placaMatch[1]) {
-        const placa = placaMatch[1].replace(/\s/g, "").toUpperCase();
-        setFormData((prev) => ({ ...prev, numero_placa: placa }));
-        setTranscriptMessage(`Placa establecida: ${placa}`);
-      }
-
-      if (tipoMatch && tipoMatch[1]) {
-        const tipo = tipoMatch[1].toUpperCase();
-        setFormData((prev) => ({ ...prev, tipo_vehiculo: tipo }));
-        setTranscriptMessage(`Tipo de vehículo establecido: ${tipo}`);
-      }
-
-      if (propietarioMatch && propietarioMatch[1]) {
-        const nombre = propietarioMatch[1].trim();
-        const nombreCapitalized = nombre
-          .split(" ")
-          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(" ");
-        setFormData((prev) => ({ ...prev, propietario: nombreCapitalized }));
-        setTranscriptMessage(`Propietario establecido: ${nombreCapitalized}`);
-      }
-
-      if (dniMatch && dniMatch[1]) {
-        setFormData((prev) => ({ ...prev, dni: dniMatch[1] }));
-        setTranscriptMessage(`DNI establecido: ${dniMatch[1]}`);
+      const lastResult = event.results[event.results.length - 1];
+      const transcript = lastResult[0].transcript.toLowerCase().trim();
+      
+      console.log("Transcripción recibida:", transcript);
+      
+      if (lastResult.isFinal) {
+        processTranscript(transcript);
+      } else {
+        setTranscriptMessage(`Escuchando: ${transcript}...`);
       }
     };
 
     recognition.onerror = (event) => {
       console.error("Error en reconocimiento:", event.error);
       if (event.error === "no-speech") {
-        setTranscriptMessage("No se detectó voz, intenta de nuevo.");
+        setTranscriptMessage("No se detectó voz. Intenta de nuevo.");
         if (isListening) restartRecognition();
-      } else if (
-        event.error === "not-allowed" ||
-        event.error === "service-not-allowed"
-      ) {
+      } else if (event.error === "aborted") {
+        // Ignorar errores de aborto
+      } else if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         setTranscriptMessage("Permiso de micrófono denegado.");
         setIsListening(false);
-        clearTimeout(restartTimeoutRef.current);
       } else {
-        setTranscriptMessage(`Error: ${event.error}`);
-        setIsListening(false);
-        clearTimeout(restartTimeoutRef.current);
+        setTranscriptMessage("Error temporal. Reintentando...");
+        if (isListening) restartRecognition();
       }
     };
 
@@ -177,8 +116,339 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
       }
       clearTimeout(restartTimeoutRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListening, isSafari]);
+
+  // FUNCIÓN MEJORADA PARA EXTRAER NÚMEROS DEL TEXTO
+  const extractNumbersFromText = (text) => {
+    console.log("Extrayendo números de:", text);
+    
+    // Mapeo de palabras a números (para cuando se dicen los números con palabras)
+    const numberWords = {
+      "cero": "0", "uno": "1", "un": "1", "una": "1",
+      "dos": "2", "tres": "3", "cuatro": "4", "cinco": "5",
+      "seis": "6", "siete": "7", "ocho": "8", "nueve": "9",
+      "diez": "10", "veinte": "20", "treinta": "30", "cuarenta": "40",
+      "cincuenta": "50", "sesenta": "60", "setenta": "70", "ochenta": "80",
+      "noventa": "90", "cien": "100", "mil": "1000"
+    };
+
+    // Primero intentar encontrar números directamente
+    const directNumbers = text.match(/\d+/g);
+    if (directNumbers && directNumbers.length > 0) {
+      console.log("Números directos encontrados:", directNumbers);
+      return directNumbers.join(" ");
+    }
+
+    // Intentar convertir palabras a números
+    const words = text.split(/\s+/);
+    let numberString = "";
+    
+    for (const word of words) {
+      if (numberWords[word]) {
+        numberString += numberWords[word];
+      } else if (/^\d+$/.test(word)) {
+        numberString += word;
+      }
+    }
+    
+    if (numberString.length > 0) {
+      console.log("Números de palabras:", numberString);
+      return numberString;
+    }
+
+    // Buscar combinaciones comunes (como "cuarenta y siete" -> 47)
+    const combinedPatterns = [
+      /(veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa)\s+y\s+(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)/gi,
+      /(dieci)(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)/gi,
+      /(veinti)(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)/gi
+    ];
+
+    for (const pattern of combinedPatterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        console.log("Patrones combinados encontrados:", matches);
+        // Simplificar por ahora, devolver el texto original para procesar después
+        return text;
+      }
+    }
+
+    return null;
+  };
+
+  // FUNCIÓN ESPECÍFICA PARA DNI
+  const extractDNI = (transcript) => {
+    console.log("Buscando DNI en:", transcript);
+    
+    // Limpiar el texto para mejor reconocimiento
+    const cleanTranscript = transcript
+      .toLowerCase()
+      .replace(/[.,]/g, ' ')  // Reemplazar puntos y comas por espacios
+      .replace(/\s+/g, ' ')   // Normalizar espacios
+      .trim();
+
+    console.log("Texto limpio:", cleanTranscript);
+
+    // PATRONES MEJORADOS PARA DNI
+    const dniPatterns = [
+      // Formato simple: "DNI 12345678"
+      /dni\s+(\d+)/i,
+      
+      // Formato: "documento 12345678"
+      /documento\s+(\d+)/i,
+      
+      // Formato: "identidad 12345678"
+      /identidad\s+(\d+)/i,
+      
+      // Formato con preposiciones: "con dni 12345678"
+      /(?:con|de|el|la|mi|su)\s+(?:dni|documento)\s+(\d+)/i,
+      
+      // Formato: "dni del propietario 12345678"
+      /dni\s+(?:del\s+)?propietario\s+(\d+)/i,
+      
+      // Formato: "número de dni 12345678"
+      /n[uú]mero\s+(?:de\s+)?(?:dni|documento)\s+(\d+)/i,
+      
+      // Solo números (8 dígitos específicamente)
+      /(\b\d{8}\b)/,
+      
+      // Números separados por espacios
+      /(\b\d\s+\d\s+\d\s+\d\s+\d\s+\d\s+\d\s+\d\b)/,
+      
+      // Cuando se dicen los números como palabras
+      /dni\s+([a-z\s]+)/i,
+      
+      // Intentar capturar cualquier cosa después de DNI
+      /dni\s+(.+)/i,
+    ];
+
+    // Primero buscar con patrones directos
+    for (const pattern of dniPatterns) {
+      const match = cleanTranscript.match(pattern);
+      if (match && match[1]) {
+        console.log("Patrón encontrado:", pattern, "->", match[1]);
+        
+        // Procesar el resultado
+        let dniCandidate = match[1];
+        
+        // Si son palabras, intentar convertirlas a números
+        if (/[a-z]/.test(dniCandidate)) {
+          const numbers = extractNumbersFromText(dniCandidate);
+          if (numbers) {
+            dniCandidate = numbers.replace(/\s/g, '');
+          }
+        }
+        
+        // Limpiar el candidato (quitar espacios, etc.)
+        dniCandidate = dniCandidate.replace(/\s/g, '');
+        
+        // Validar que sea un número válido para DNI (7-8 dígitos)
+        if (/^\d{7,8}$/.test(dniCandidate)) {
+          console.log("DNI válido encontrado:", dniCandidate);
+          return dniCandidate;
+        }
+      }
+    }
+
+    // ENFOQUE ALTERNATIVO: Buscar cualquier secuencia de 7-8 dígitos en todo el texto
+    const allNumbers = cleanTranscript.match(/\d+/g);
+    if (allNumbers) {
+      console.log("Todos los números en el texto:", allNumbers);
+      
+      // Buscar números que parezcan DNI
+      for (const num of allNumbers) {
+        if (num.length === 8 || num.length === 7) {
+          console.log("Posible DNI encontrado en números generales:", num);
+          
+          // Verificar contexto: ¿está cerca de la palabra "dni"?
+          const index = cleanTranscript.indexOf(num);
+          const beforeText = cleanTranscript.substring(Math.max(0, index - 20), index);
+          
+          if (beforeText.includes("dni") || 
+              beforeText.includes("documento") || 
+              beforeText.includes("identidad") ||
+              allNumbers.length === 1) {
+            console.log("DNI confirmado por contexto:", num);
+            return num;
+          }
+        }
+      }
+    }
+
+    // ÚLTIMO INTENTO: Si el texto contiene "dni" y números, tomar todos los números juntos
+    if (cleanTranscript.includes("dni") || cleanTranscript.includes("documento")) {
+      const allDigits = cleanTranscript.replace(/\D/g, '');
+      console.log("Todos los dígitos juntos:", allDigits);
+      
+      if (allDigits.length === 8 || allDigits.length === 7) {
+        console.log("DNI extraído de todos los dígitos:", allDigits);
+        return allDigits;
+      }
+    }
+
+    console.log("No se encontró DNI válido");
+    return null;
+  };
+
+  // Procesar transcript final
+  const processTranscript = (transcript) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    
+    console.log("=== PROCESANDO TRANSCRIPCIÓN ===");
+    console.log("Texto original:", transcript);
+    
+    setTranscriptMessage(`Escuchado: ${transcript}`);
+
+    // Comandos de control
+    const controlCommands = [
+      { pattern: /(desactivar|apagar|detener|parar|silenciar).*(micrófono|microfono|voz)/i, action: () => stopListening() },
+      { pattern: /(cancelar|salir|cerrar|terminar)/i, action: () => { stopListening(); resetForm(); onClose(); } },
+      { pattern: /(registrar|guardar|enviar|finalizar|completar)/i, action: () => { stopListening(); submitForm(); } },
+      { pattern: /(ayuda|instrucciones|cómo funciona|qué puedo decir)/i, action: () => showHelpGuide() },
+      { pattern: /(limpiar|borrar|empezar de nuevo|reiniciar)/i, action: () => resetForm() },
+    ];
+
+    for (const command of controlCommands) {
+      if (command.pattern.test(transcript)) {
+        command.action();
+        setIsProcessing(false);
+        return;
+      }
+    }
+
+    // Procesar campos del formulario
+    let processed = false;
+    let updates = [];
+
+    // 1. PROCESAR DNI (con logging detallado)
+    console.log("Intentando extraer DNI...");
+    const dni = extractDNI(transcript);
+    if (dni) {
+      console.log("DNI extraído:", dni);
+      setFormData(prev => {
+        const newData = { ...prev, dni: dni };
+        console.log("Nuevo estado DNI:", newData);
+        return newData;
+      });
+      updates.push(`✓ DNI: ${dni}`);
+      processed = true;
+    } else {
+      console.log("No se pudo extraer DNI");
+    }
+
+    // 2. Procesar placa
+    const placaPatterns = [
+      /(?:placa|matrícula|matricula|número de placa|patente)\s*(?:es|de|número)?\s*([a-z0-9\s-]+)/i,
+      /(?:la placa|el número)\s*(?:es)?\s*([a-z0-9\s-]+)/i,
+      /^([a-z0-9]{2,3}-?\s?[a-z0-9]{3,4})$/i,
+    ];
+
+    for (const pattern of placaPatterns) {
+      const match = transcript.match(pattern);
+      if (match && match[1]) {
+        const placa = match[1].replace(/\s/g, "").replace(/[^\w]/g, "").toUpperCase();
+        if (placa.length >= 3) {
+          setFormData(prev => ({ ...prev, numero_placa: placa }));
+          updates.push(`✓ Placa: ${placa}`);
+          processed = true;
+          break;
+        }
+      }
+    }
+
+    // 3. Procesar tipo de vehículo
+    const tipoPatterns = [
+      /(?:tipo de vehículo|tipo|clase|categoría|vehículo)\s*(?:es|de)?\s*(l[1-7]|m1|n1)/i,
+      /(?:es un|es una|vehículo)\s+(l[1-7]|m1|n1)/i,
+    ];
+
+    for (const pattern of tipoPatterns) {
+      const match = transcript.match(pattern);
+      if (match && match[1]) {
+        const tipo = match[1].toUpperCase();
+        setFormData(prev => ({ ...prev, tipo_vehiculo: tipo }));
+        updates.push(`✓ Tipo: ${tipo}`);
+        processed = true;
+        break;
+      }
+    }
+
+    // 4. Procesar propietario
+    const propietarioPatterns = [
+      /(?:propietario|dueño|nombre|titular)\s*(?:es|de nombre)?\s*([a-záéíóúñ\s]{3,})/i,
+      /(?:el propietario|el dueño)\s*(?:es)?\s*([a-záéíóúñ\s]+)/i,
+    ];
+
+    for (const pattern of propietarioPatterns) {
+      const match = transcript.match(pattern);
+      if (match && match[1]) {
+        const nombre = match[1].trim();
+        const nombreCapitalized = nombre
+          .split(" ")
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
+        
+        if (nombreCapitalized.length >= 3) {
+          setFormData(prev => ({ ...prev, propietario: nombreCapitalized }));
+          updates.push(`✓ Propietario: ${nombreCapitalized}`);
+          processed = true;
+          break;
+        }
+      }
+    }
+
+    // Mostrar resultados
+    if (updates.length > 0) {
+      setTranscriptMessage(updates.join('\n'));
+    } else {
+      // INTENTO DE EMERGENCIA: Si dijiste algo como "DNI 47251756" y no se capturó
+      const words = transcript.toLowerCase().split(/\s+/);
+      if (words.includes("dni") || words.includes("documento")) {
+        // Buscar cualquier número en la frase
+        const anyNumber = transcript.match(/\d+/);
+        if (anyNumber) {
+          setFormData(prev => ({ ...prev, dni: anyNumber[0] }));
+          setTranscriptMessage(`✓ DNI detectado: ${anyNumber[0]}`);
+          processed = true;
+        } else {
+          // Si no hay números, mostrar mensaje específico
+          setTranscriptMessage("Escuché 'DNI' pero no pude capturar los números. Intenta decir: 'DNI 4-7-2-5-1-7-5-6' (números separados)");
+        }
+      } else {
+        const suggestions = [
+          "Para DNI di claramente: 'DNI' pausa '4-7-2-5-1-7-5-6'",
+          "O intenta: 'Documento 47251756'",
+          "También puedes decir los números separados: 'cuatro siete dos cinco uno siete cinco seis'",
+          "Di 'Ayuda' para ver todos los comandos disponibles"
+        ];
+        const randomSuggestion = suggestions[Math.floor(Math.random() * suggestions.length)];
+        setTranscriptMessage(`No entendí completamente. ${randomSuggestion}`);
+      }
+    }
+
+    console.log("Procesamiento completado, processed:", processed);
+    setIsProcessing(false);
+  };
+
+  // Mostrar guía de ayuda
+  const showHelpGuide = () => {
+    const guide = `
+PARA DNI (IMPORTANTE):
+1. Di claramente: "DNI" (pausa breve)
+2. Luego di los números SEPARADOS: "4-7-2-5-1-7-5-6"
+3. O di: "Documento 47251756"
+4. O di los números como palabras: "cuatro siete dos cinco uno siete cinco seis"
+
+OTROS COMANDOS:
+• "Placa ABC123"
+• "Tipo M1" (para autos)
+• "Propietario Juan Pérez"
+• "Registrar" - Guardar
+• "Cancelar" - Salir
+• "Ayuda" - Ver esta guía
+    `;
+    setTranscriptMessage(guide);
+  };
 
   // Reiniciar reconocimiento
   const restartRecognition = () => {
@@ -189,30 +459,40 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
           recognitionRef.current.start();
         } catch (error) {
           console.error("Error al reiniciar:", error);
-          setIsListening(false);
-          setTranscriptMessage("Error al reiniciar reconocimiento.");
         }
       }
     }, 200);
   };
 
+  // Iniciar escucha
   const startListening = () => {
     if (recognitionRef.current && !isListening) {
-      setIsListening(true);
-      recognitionRef.current.start();
-      setTranscriptMessage("Micrófono activado, di un comando...");
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+        setTranscriptMessage("🎤 Micrófono activado");
+      } catch (error) {
+        console.error("Error al iniciar:", error);
+        setTranscriptMessage("Error al acceder al micrófono.");
+      }
     }
   };
 
+  // Detener escucha
   const stopListening = () => {
     if (recognitionRef.current && isListening) {
-      setIsListening(false);
-      recognitionRef.current.stop();
-      clearTimeout(restartTimeoutRef.current);
-      setTranscriptMessage("Micrófono desactivado.");
+      try {
+        recognitionRef.current.stop();
+        setIsListening(false);
+        clearTimeout(restartTimeoutRef.current);
+        setTranscriptMessage("Micrófono desactivado.");
+      } catch (error) {
+        console.error("Error al detener:", error);
+      }
     }
   };
 
+  // Alternar escucha
   const handleToggleListening = () => {
     if (isListening) {
       stopListening();
@@ -221,8 +501,23 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
     }
   };
 
+  // Enviar formulario
+  const submitForm = () => {
+    if (formRef.current) {
+      const submitEvent = new Event('submit', { cancelable: true, bubbles: true });
+      formRef.current.dispatchEvent(submitEvent);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Validación básica
+    if (!formData.numero_placa || !formData.tipo_vehiculo || !formData.dni || !formData.propietario) {
+      setTranscriptMessage("Por favor, complete todos los campos antes de registrar.");
+      return;
+    }
+
     const userId = localStorage.getItem("id");
     if (!userId) {
       setTranscriptMessage("Debes iniciar sesión primero.");
@@ -230,8 +525,7 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
     }
 
     // Convertir el código del tipo de vehículo a su nombre completo antes de enviar
-    const tipoVehiculoName =
-      vehicleTypes[formData.tipo_vehiculo] || formData.tipo_vehiculo;
+    const tipoVehiculoName = vehicleTypes[formData.tipo_vehiculo] || formData.tipo_vehiculo;
 
     try {
       const response = await axios.post(
@@ -254,8 +548,7 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
         setShowSuccessModal(true);
       }
     } catch (error) {
-      const errorMessage =
-        error.response?.data?.error || error.message || "Error desconocido";
+      const errorMessage = error.response?.data?.error || error.message || "Error desconocido";
       setTranscriptMessage(`Error al registrar: ${errorMessage}`);
       console.error("Error:", error);
     }
@@ -300,7 +593,14 @@ const NewVehicleModal = ({ isOpen, onClose, onSuccess }) => {
             />
           </button>
         </div>
-        <p className="text-sm text-gray-200 mb-4">{transcriptMessage}</p>
+        
+        {/* Mensaje con mejor formato */}
+        <div className="mb-4 min-h-[80px] p-3 bg-blue-900/30 rounded-md">
+          <p className="text-sm text-gray-200 whitespace-pre-line">
+            {transcriptMessage || (isListening ? "Escuchando... Di algo como 'DNI 47251756'" : "Activa el micrófono para usar comandos de voz")}
+          </p>
+        </div>
+        
         <form ref={formRef} onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
             <FontAwesomeIcon
